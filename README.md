@@ -59,6 +59,9 @@ each push to `main`. Terraform creates the cluster on the first run, then uses
 its saved state to plan and apply any infrastructure changes on later runs.
 The workflow also provisions infrastructure before the manual rollback demo.
 This project uses `us-east-1` and the cluster name `voting-app-cluster`.
+Terraform filters default-VPC subnets to EKS-supported Availability Zones in
+this account (`us-east-1a`, `us-east-1b`, `us-east-1c`, `us-east-1d`, and
+`us-east-1f`), excluding `us-east-1e`, which EKS rejected for the cluster.
 
 The Terraform S3 backend uses the existing bucket
 `voting-app-cluster-bucket` in `us-east-1`. The state key is configured in
