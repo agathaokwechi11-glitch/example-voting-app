@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy Repository Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           ignore-unfixed: true
@@ -83,6 +83,19 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ matrix.image }}:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ matrix.image }}:latest
+
+      - name: Scan published image with Trivy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+        env:
+          TRIVY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TRIVY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
 
   deploy:
     name: Deploy Helm release to EKS
