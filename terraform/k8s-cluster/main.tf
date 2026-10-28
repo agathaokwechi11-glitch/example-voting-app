@@ -133,25 +133,3 @@ resource "aws_eks_node_group" "main" {
     aws_security_group_rule.cluster_ingress_vpc,
   ]
 }
-
-resource "aws_eks_access_entry" "github_actions" {
-  count = var.github_actions_role_arn == "" ? 0 : 1
-
-  cluster_name  = aws_eks_cluster.main.name
-  principal_arn = var.github_actions_role_arn
-  type          = "STANDARD"
-}
-
-resource "aws_eks_access_policy_association" "github_actions_admin" {
-  count = var.github_actions_role_arn == "" ? 0 : 1
-
-  cluster_name  = aws_eks_cluster.main.name
-  principal_arn = var.github_actions_role_arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-
-  access_scope {
-    type = "cluster"
-  }
-
-  depends_on = [aws_eks_access_entry.github_actions]
-}

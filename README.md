@@ -71,12 +71,14 @@ manually. Enable bucket versioning so prior state versions can be recovered.
 
 Create an AWS IAM role trusted by GitHub Actions OIDC. Its trust policy must
 match this repository and the `main` branch. Store its full ARN as the GitHub
-Actions secret `AWS_ROLE_ARN`. Terraform passes this role ARN into the EKS
-configuration to grant it cluster access.
+Actions secret `AWS_ROLE_ARN`. The role that creates the EKS cluster is
+automatically granted cluster-admin access by the cluster's
+`bootstrap_cluster_creator_admin_permissions` setting; Terraform must not
+create a second access entry for that same role.
 
 **Important:** the role needs permissions for Terraform to manage the EKS
-cluster, managed node group, IAM roles and policy attachments, EKS access
-entry, and the cluster security-group rule. It also needs `iam:PassRole` for
+cluster, managed node group, IAM roles and policy attachments, and the cluster
+security-group rule. It also needs `iam:PassRole` for
 the EKS and EC2 service roles, plus S3 permissions to read/write the state
 object and create/remove the `.tflock` lock object in the configured bucket.
 `eks:DescribeCluster` alone is not enough for automatic provisioning. Restrict
@@ -92,8 +94,7 @@ kubectl get nodes
 In the GitHub repository settings, add the `DOCKERHUB_USERNAME`,
 `DOCKERHUB_TOKEN`, and `AWS_ROLE_ARN` Actions secrets. Set the `AWS_REGION`
 repository variable to `us-east-1` and `EKS_CLUSTER_NAME` to
-`voting-app-cluster`. `AWS_ROLE_ARN` must be the same IAM role ARN passed to
-Terraform. Pushes to `main` run Trivy, build and publish commit-tagged images
+`voting-app-cluster`. Pushes to `main` run Trivy, build and publish commit-tagged images
 to Docker Hub, and deploy that exact image tag with Helm. Pull requests scan
 and build without publishing or deploying. Terraform provisions or updates the
 EKS cluster in the infrastructure job; the workflow does not delete it.

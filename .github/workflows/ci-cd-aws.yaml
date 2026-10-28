@@ -143,7 +143,6 @@ jobs:
             -input=false \
             -var="aws_region=$AWS_REGION" \
             -var="cluster_name=$EKS_CLUSTER_NAME" \
-            -var="github_actions_role_arn=$AWS_ROLE_ARN" \
             -out=tfplan
 
       - name: Apply infrastructure changes

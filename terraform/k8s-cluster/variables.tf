@@ -39,9 +39,3 @@ variable "max_node_count" {
   type        = number
   default     = 3
 }
-
-variable "github_actions_role_arn" {
-  description = "Optional IAM role assumed by GitHub Actions for EKS deployment."
-  type        = string
-  default     = ""
-}
