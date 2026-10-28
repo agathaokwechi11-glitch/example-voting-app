@@ -1,0 +1,220 @@
+name: CI/CD Pipeline - Build, Scan and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      rollback_demo:
+        description: Run the bad-release/rollback exercise in an isolated namespace
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Repository Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          ignore-unfixed: true
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+  build-and-push:
+    name: Build and Publish Container Images
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - context: vote
+            image: examplevotingapp_vote
+          - context: result
+            image: examplevotingapp_result
+          - context: worker
+            image: examplevotingapp_worker
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check Docker Hub credentials before publishing
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "Configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets before publishing."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.context }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ matrix.image }}:latest
+
+  deploy:
+    name: Deploy Helm release to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$EKS_CLUSTER_NAME" ] || [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "Configure AWS_REGION and EKS_CLUSTER_NAME repository variables, plus Docker Hub secrets."
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_ROLE_ARN }}" ]; then
+            echo "Configure the AWS_ROLE_ARN repository secret for GitHub OIDC."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy voting app
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          helm upgrade --install voting-app ./helm/voting-app \
+            --namespace voting-app \
+            --create-namespace \
+            --wait \
+            --timeout 10m \
+            --set-string images.vote.repository="$DOCKERHUB_USERNAME/examplevotingapp_vote" \
+            --set-string images.vote.tag="$IMAGE_TAG" \
+            --set-string images.result.repository="$DOCKERHUB_USERNAME/examplevotingapp_result" \
+            --set-string images.result.tag="$IMAGE_TAG" \
+            --set-string images.worker.repository="$DOCKERHUB_USERNAME/examplevotingapp_worker" \
+            --set-string images.worker.tag="$IMAGE_TAG"
+
+  rollback-demo:
+    name: Isolated Helm bad-release rollback exercise
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.rollback_demo
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Ship a bad release in the isolated demo namespace, then roll back
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$EKS_CLUSTER_NAME" ] || [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "Configure AWS_REGION, EKS_CLUSTER_NAME, and DOCKERHUB_USERNAME before running this exercise."
+            exit 1
+          fi
+
+          release=voting-app-rollback-demo
+          namespace=voting-rollback-demo
+          chart=./helm/voting-app
+
+          helm upgrade --install "$release" "$chart" \
+            --namespace "$namespace" \
+            --create-namespace \
+            --wait \
+            --timeout 10m \
+            --set service.type=ClusterIP \
+            --set-string images.vote.repository="$DOCKERHUB_USERNAME/examplevotingapp_vote" \
+            --set-string images.vote.tag=latest \
+            --set-string images.result.repository="$DOCKERHUB_USERNAME/examplevotingapp_result" \
+            --set-string images.result.tag=latest \
+            --set-string images.worker.repository="$DOCKERHUB_USERNAME/examplevotingapp_worker" \
+            --set-string images.worker.tag=latest
+
+          stable_revision=$(helm history "$release" --namespace "$namespace" --output json | jq -r '.[-1].revision')
+          if [ -z "$stable_revision" ] || [ "$stable_revision" = "null" ]; then
+            echo "Could not determine the stable Helm revision to restore."
+            exit 1
+          fi
+
+          if helm upgrade "$release" "$chart" \
+            --namespace "$namespace" \
+            --wait \
+            --timeout 90s \
+            --set service.type=ClusterIP \
+            --set-string images.vote.repository="$DOCKERHUB_USERNAME/examplevotingapp_vote" \
+            --set-string images.vote.tag="intentionally-missing-${GITHUB_RUN_ID}" \
+            --set-string images.result.repository="$DOCKERHUB_USERNAME/examplevotingapp_result" \
+            --set-string images.result.tag=latest \
+            --set-string images.worker.repository="$DOCKERHUB_USERNAME/examplevotingapp_worker" \
+            --set-string images.worker.tag=latest; then
+            echo "The intentionally bad release unexpectedly succeeded."
+            exit 1
+          else
+            echo "The bad release failed as expected; restoring Helm revision $stable_revision."
+          fi
+
+          helm rollback "$release" "$stable_revision" \
+            --namespace "$namespace" \
+            --wait \
+            --timeout 10m
+          helm status "$release" --namespace "$namespace"

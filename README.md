@@ -46,6 +46,60 @@ To remove them, run:
 kubectl delete -f k8s-specifications/
 ```
 
+## Deploy to AWS EKS with Helm
+
+The Helm chart in `helm/voting-app` deploys the vote, result, worker, PostgreSQL,
+and Redis services. Its configuration is in the chart's single `values.yaml`.
+The vote and result services use AWS load balancers by default; the database
+and Redis use ephemeral storage, so this sample chart is intended for learning
+and demonstration, not production data.
+
+Provision the EKS cluster from `terraform/k8s-cluster` using AWS credentials
+with permission to create the listed EKS and IAM resources:
+
+```shell
+cd terraform/k8s-cluster
+terraform init
+terraform apply
+```
+
+For CI deployments, create an AWS IAM role trusted by GitHub Actions OIDC and
+grant it `eks:DescribeCluster`. Add its ARN as the Terraform variable
+`github_actions_role_arn` when applying, so EKS grants that role cluster
+administrator access:
+
+```shell
+terraform apply -var="github_actions_role_arn=arn:aws:iam::<account-id>:role/<github-actions-role>"
+```
+
+In the GitHub repository settings, add the `DOCKERHUB_USERNAME`,
+`DOCKERHUB_TOKEN`, and `AWS_ROLE_ARN` Actions secrets and set the
+`AWS_REGION` and `EKS_CLUSTER_NAME` Actions variables to match Terraform.
+Restrict the IAM role's OIDC trust policy to this repository's `main` branch.
+Pushes to `main` run Trivy, build and publish commit-tagged images to Docker
+Hub, and deploy that exact image tag with Helm. Pull requests scan and build
+without publishing or deploying.
+
+You can also deploy the chart directly after configuring `kubectl`:
+
+```shell
+aws eks update-kubeconfig --name voting-app-cluster --region eu-west-1
+helm upgrade --install voting-app ./helm/voting-app --namespace voting-app --create-namespace --wait
+kubectl get services --namespace voting-app
+```
+
+To demonstrate Helm recovery safely, manually run the workflow with
+`rollback_demo` enabled. It installs the known-good release in the separate
+`voting-rollback-demo` namespace, attempts an image tag that does not exist,
+then rolls back to the recorded good revision. It does not alter the regular
+`voting-app` release. To inspect or remove the demo later:
+
+```shell
+helm history voting-app-rollback-demo --namespace voting-rollback-demo
+helm uninstall voting-app-rollback-demo --namespace voting-rollback-demo
+kubectl delete namespace voting-rollback-demo
+```
+
 ## Architecture
 
 ![Architecture diagram](architecture.excalidraw.png)

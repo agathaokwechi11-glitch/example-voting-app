@@ -1,0 +1,32 @@
+images:
+  vote:
+    repository: dockersamples/examplevotingapp_vote
+    tag: latest
+    pullPolicy: IfNotPresent
+  result:
+    repository: dockersamples/examplevotingapp_result
+    tag: latest
+    pullPolicy: IfNotPresent
+  worker:
+    repository: dockersamples/examplevotingapp_worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: LoadBalancer
+  votePort: 8080
+  resultPort: 8081
+
+voteOptions:
+  optionA: Cats
+  optionB: Dogs
+
+database:
+  image: postgres:15-alpine
+  user: postgres
+  password: postgres
+
+redis:
+  image: redis:alpine
