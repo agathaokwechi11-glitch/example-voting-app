@@ -97,10 +97,64 @@ jobs:
           TRIVY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           TRIVY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
 
+  provision-infrastructure:
+    name: Provision or update EKS with Terraform
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.rollback_demo)
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate infrastructure configuration
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$EKS_CLUSTER_NAME" ] || [ -z "$AWS_ROLE_ARN" ]; then
+            echo "Configure AWS_REGION, EKS_CLUSTER_NAME, and AWS_ROLE_ARN before provisioning."
+            exit 1
+          fi
+          if [ "$AWS_REGION" != "us-east-1" ]; then
+            echo "The Terraform state backend and this cluster are configured for us-east-1."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.6
+
+      - name: Initialize Terraform with remote state
+        run: terraform -chdir=terraform/k8s-cluster init -input=false
+
+      - name: Plan infrastructure changes
+        run: |
+          terraform -chdir=terraform/k8s-cluster plan \
+            -input=false \
+            -var="aws_region=$AWS_REGION" \
+            -var="cluster_name=$EKS_CLUSTER_NAME" \
+            -var="github_actions_role_arn=$AWS_ROLE_ARN" \
+            -out=tfplan
+
+      - name: Apply infrastructure changes
+        run: terraform -chdir=terraform/k8s-cluster apply -input=false -auto-approve tfplan
+
   deploy:
     name: Deploy Helm release to EKS
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs:
+      - build-and-push
+      - provision-infrastructure
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -155,6 +209,7 @@ jobs:
   rollback-demo:
     name: Isolated Helm bad-release rollback exercise
     runs-on: ubuntu-latest
+    needs: provision-infrastructure
     if: github.event_name == 'workflow_dispatch' && inputs.rollback_demo
     permissions:
       contents: read

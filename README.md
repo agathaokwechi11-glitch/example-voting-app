@@ -54,36 +54,51 @@ The vote and result services use AWS load balancers by default; the database
 and Redis use ephemeral storage, so this sample chart is intended for learning
 and demonstration, not production data.
 
-Provision the EKS cluster from `terraform/k8s-cluster` using AWS credentials
-with permission to create the listed EKS and IAM resources:
+The GitHub Actions workflow automatically runs Terraform before deployment on
+each push to `main`. Terraform creates the cluster on the first run, then uses
+its saved state to plan and apply any infrastructure changes on later runs.
+The workflow also provisions infrastructure before the manual rollback demo.
+This project uses `us-east-1` and the cluster name `voting-app-cluster`.
+
+The Terraform S3 backend uses the existing bucket
+`voting-app-cluster-bucket` in `us-east-1`. The state key is configured in
+`terraform/k8s-cluster/providers.tf` as
+`terraform/k8s-cluster/terraform.tfstate`; you do not need to create the key
+manually. Enable bucket versioning so prior state versions can be recovered.
+
+Create an AWS IAM role trusted by GitHub Actions OIDC. Its trust policy must
+match this repository and the `main` branch. Store its full ARN as the GitHub
+Actions secret `AWS_ROLE_ARN`. Terraform passes this role ARN into the EKS
+configuration to grant it cluster access.
+
+**Important:** the role needs permissions for Terraform to manage the EKS
+cluster, managed node group, IAM roles and policy attachments, EKS access
+entry, and the cluster security-group rule. It also needs `iam:PassRole` for
+the EKS and EC2 service roles, plus S3 permissions to read/write the state
+object and create/remove the `.tflock` lock object in the configured bucket.
+`eks:DescribeCluster` alone is not enough for automatic provisioning. Restrict
+the role trust to this repository; infrastructure changes can incur AWS costs.
+
+After Terraform completes successfully, configure and verify kubectl:
 
 ```shell
-cd terraform/k8s-cluster
-terraform init
-terraform apply
-```
-
-For CI deployments, create an AWS IAM role trusted by GitHub Actions OIDC and
-grant it `eks:DescribeCluster`. Add its ARN as the Terraform variable
-`github_actions_role_arn` when applying, so EKS grants that role cluster
-administrator access:
-
-```shell
-terraform apply -var="github_actions_role_arn=arn:aws:iam::<account-id>:role/<github-actions-role>"
+aws eks update-kubeconfig --name voting-app-cluster --region us-east-1
+kubectl get nodes
 ```
 
 In the GitHub repository settings, add the `DOCKERHUB_USERNAME`,
-`DOCKERHUB_TOKEN`, and `AWS_ROLE_ARN` Actions secrets and set the
-`AWS_REGION` and `EKS_CLUSTER_NAME` Actions variables to match Terraform.
-Restrict the IAM role's OIDC trust policy to this repository's `main` branch.
-Pushes to `main` run Trivy, build and publish commit-tagged images to Docker
-Hub, and deploy that exact image tag with Helm. Pull requests scan and build
-without publishing or deploying.
+`DOCKERHUB_TOKEN`, and `AWS_ROLE_ARN` Actions secrets. Set the `AWS_REGION`
+repository variable to `us-east-1` and `EKS_CLUSTER_NAME` to
+`voting-app-cluster`. `AWS_ROLE_ARN` must be the same IAM role ARN passed to
+Terraform. Pushes to `main` run Trivy, build and publish commit-tagged images
+to Docker Hub, and deploy that exact image tag with Helm. Pull requests scan
+and build without publishing or deploying. Terraform provisions or updates the
+EKS cluster in the infrastructure job; the workflow does not delete it.
 
 You can also deploy the chart directly after configuring `kubectl`:
 
 ```shell
-aws eks update-kubeconfig --name voting-app-cluster --region eu-west-1
+aws eks update-kubeconfig --name voting-app-cluster --region us-east-1
 helm upgrade --install voting-app ./helm/voting-app --namespace voting-app --create-namespace --wait
 kubectl get services --namespace voting-app
 ```
